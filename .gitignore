@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.streamlit/secrets.toml
+data/*.xlsx
+data/*.xls
+data/passwords.json
+.env
+*.bak
+apply_patch4.py
+data/uploads/*
+!data/uploads/.gitkeep
