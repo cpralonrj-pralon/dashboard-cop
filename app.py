@@ -457,13 +457,40 @@ hr {{ border-color: var(--border) !important; opacity: 1 !important; }}
 .dpa-card .dpa-val   {{ font-size: 1.35rem; font-weight: 800; }}
 .dpa-card .dpa-setor {{ font-size: 0.72rem; color: var(--text3); margin-top: 0.15rem; }}
 .dpa-semaforo-verde    {{ color: var(--success); }}
-.dpa-semaforo-amarelo  {{ color: var(--warning); }}
-.dpa-semaforo-vermelho {{ color: var(--danger); }}
+/* ═══════════ ANALYST COCKPIT STYLES ═══════════ */
+.analyst-hero-banner {
+    background: linear-gradient(135deg, rgba(237,28,36,0.12) 0%, rgba(165,14,20,0.22) 100%);
+    border: 1px solid var(--claro-red-bd);
+    border-radius: var(--r-xl);
+    padding: 1.4rem 1.8rem;
+    margin-bottom: 1.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    box-shadow: var(--shadow);
+}
+.analyst-greeting { font-size: 1.4rem; font-weight: 800; color: var(--text1); margin: 0; }
+.analyst-subgreeting { font-size: 0.84rem; color: var(--text3); margin-top: 0.2rem; }
+.analyst-badge-row { display: flex; align-items: center; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }
+.analyst-pill {
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+.analyst-pill-setor { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }
+.analyst-pill-cert-ok { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
+.analyst-pill-cert-alert { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bg); }
+.analyst-pill-cert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
 
 /* Responsive */
 @media (max-width: 768px) {{
     .main-header h1 {{ font-size: 1.3rem !important; }}
     section.main > div.block-container {{ padding-left: 1rem !important; padding-right: 1rem !important; }}
+    .analyst-hero-banner {{ flex-direction: column; align-items: flex-start; gap: 0.8rem; }}
 }}
 </style>"""
 
@@ -2032,16 +2059,19 @@ with st.sidebar:
             st.session_state.pop(key, None)
         st.rerun()
 
-    st.markdown("---")
-    st.markdown('<div class="sidebar-section">Equipe</div>', unsafe_allow_html=True)
-    analistas_options = df[[COL_LOGIN, COL_NOME]].drop_duplicates().sort_values(COL_NOME)
-    analista_selecionado = st.selectbox(
-        "Detalhe individual",
-        options=["Todos"] + analistas_options[COL_LOGIN].tolist(),
-        format_func=lambda x: "Visão Geral" if x == "Todos" else
-            analistas_options[analistas_options[COL_LOGIN]==x][COL_NOME].iloc[0]
-            if len(analistas_options[analistas_options[COL_LOGIN]==x]) > 0 else x,
-    )
+    if _is_admin:
+        st.markdown("---")
+        st.markdown('<div class="sidebar-section">Equipe</div>', unsafe_allow_html=True)
+        analistas_options = df[[COL_LOGIN, COL_NOME]].drop_duplicates().sort_values(COL_NOME)
+        analista_selecionado = st.selectbox(
+            "Detalhe individual",
+            options=["Todos"] + analistas_options[COL_LOGIN].tolist(),
+            format_func=lambda x: "Visão Geral" if x == "Todos" else
+                analistas_options[analistas_options[COL_LOGIN]==x][COL_NOME].iloc[0]
+                if len(analistas_options[analistas_options[COL_LOGIN]==x]) > 0 else x,
+        )
+    else:
+        analista_selecionado = "Todos"
 
     st.markdown("---")
     st.markdown('<div class="sidebar-section">Status dos Dados</div>', unsafe_allow_html=True)
@@ -2433,8 +2463,8 @@ if _is_admin:
         + (1 if chat_toa_loaded else 0)
     )
 else:
-    # Não-admin: visão consolidada
-    _u_labels = ["📊 Resumo"]
+    # Não-admin: visão consolidada (Cockpit do Analista)
+    _u_labels = ["🚀 Meu Painel"]
     _u_i = 1
     _u_etit_idx = None; _u_res_idx = None; _u_toa_idx = None
     _u_dpa_idx = None;  _u_fech_sir_idx = None; _u_chat_toa_idx = None; _u_highlights_idx = None
@@ -2467,7 +2497,7 @@ if not _is_admin:
 # ---- TAB 1: RANKING ----
 with tabs[0]:
   if not _is_admin:
-    # ── Visão do analista: você vs equipe (sem dados individuais de colegas) ──
+    # ── Visão do analista: Cockpit Pessoal ──
     _resumo_user = resumo_geral(df_filtrado)
     if not _resumo_user.empty:
         _user_row_res = _resumo_user.iloc[0]
@@ -2475,70 +2505,88 @@ with tabs[0]:
         _u_dias  = _user_row_res.get("Dias_Trabalhados", 0)
         _u_media = _user_row_res.get("Media_Diaria", 0)
         _u_dpa   = _user_row_res.get("DPA_Media", None)
-
+        _u_nome_display = _user_nome or _mat_up or "Analista"
         setor_label = _user_setor or "—"
-        st.markdown(f"#### 📊 Você vs Equipe ({setor_label})")
-        st.caption("Comparação dos seus resultados com a média da equipe do mesmo setor.")
+        _setor_icon = "🏠" if setor_label == "RESIDENCIAL" else "🏢"
+
+        # ── HERO BANNER ──────────────────────────────────────────────────────────
+        st.markdown(f"""
+        <div class="analyst-hero-banner">
+            <div>
+                <div class="analyst-greeting">👋 Bem-vindo ao seu Painel, {_u_nome_display}!</div>
+                <div class="analyst-subgreeting">Acompanhe seus resultados individuais e seu desempenho em relação às metas do setor.</div>
+                <div class="analyst-badge-row">
+                    <span class="analyst-pill analyst-pill-setor">{_setor_icon} Setor {setor_label}</span>
+                    <span class="analyst-pill analyst-pill-setor">🔑 Matrícula: {_mat_up}</span>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── KPI CARDS COMPARATIVOS (Você vs Média da Equipe) ─────────────────
+        st.markdown('<div class="section-header">📊 Seu Desempenho no Período</div>', unsafe_allow_html=True)
 
         _cmp_cols = st.columns(4)
         with _cmp_cols[0]:
-            st.markdown(kpi_card("Seu Volume Total", f"{_u_vol:,.0f}", COR_PRIMARIA), unsafe_allow_html=True)
+            _vol_delta = (_u_vol - _tm_vol_medio) if _tm_vol_medio else None
+            st.markdown(kpi_card("Seu Volume Total", f"{_u_vol:,.0f}", COR_PRIMARIA, delta=_vol_delta), unsafe_allow_html=True)
         with _cmp_cols[1]:
-            _tm_v_str = f"{_tm_vol_medio:,.0f}" if _tm_vol_medio else "—"
-            st.markdown(kpi_card("Média da Equipe", _tm_v_str, COR_INFO), unsafe_allow_html=True)
-        with _cmp_cols[2]:
             _c_media = COR_SUCESSO if (_tm_media_diaria and _u_media >= _tm_media_diaria) else COR_ALERTA
-            st.markdown(kpi_card("Sua Média/Dia", f"{_u_media:,.1f}", _c_media), unsafe_allow_html=True)
+            _media_delta = (_u_media - _tm_media_diaria) if _tm_media_diaria else None
+            st.markdown(kpi_card("Sua Média Diária", f"{_u_media:,.1f}", _c_media, delta=_media_delta), unsafe_allow_html=True)
+        with _cmp_cols[2]:
+            _tm_v_str = f"{_tm_vol_medio:,.0f}" if _tm_vol_medio else "—"
+            st.markdown(kpi_card("Média Vol. Equipe", _tm_v_str, COR_INFO), unsafe_allow_html=True)
         with _cmp_cols[3]:
             _tm_md_str = f"{_tm_media_diaria:,.1f}" if _tm_media_diaria else "—"
             st.markdown(kpi_card("Média/Dia Equipe", _tm_md_str, COR_INFO), unsafe_allow_html=True)
 
-        # Gráfico de barras: você vs média da equipe
-        if _tm_vol_medio and _tm_media_diaria:
-            st.markdown("---")
-            _df_cmp = pd.DataFrame({
-                "Métrica": ["Volume Total", "Média por Dia"],
-                "Você":    [float(_u_vol),   float(_u_media)],
-                "Equipe":  [float(_tm_vol_medio), float(_tm_media_diaria)],
-            }).set_index("Métrica")
-            st.bar_chart(_df_cmp, height=300)
+        # ── VISUALIZAÇÕES GRÁFICAS LADO A LADO ─────────────────────────────
+        st.markdown("")
+        _cg1, _cg2 = st.columns(2)
+        with _cg1:
+            st.markdown("##### 📈 Sua Evolução Diária de Volume")
+            daily_ind = df_filtrado.groupby(COL_DATA)[COL_VOL_TOTAL].sum().reset_index()
+            daily_ind.columns = ["Data", "Volume"]
+            st.bar_chart(daily_ind.set_index("Data"), color=COR_INFO, height=270)
+        with _cg2:
+            st.markdown("##### 🧩 Sua Composição de Atividades")
+            vol_breakdown = {}
+            for col, label in VOL_COLS.items():
+                if col in df_filtrado.columns:
+                    v = df_filtrado[col].sum()
+                    if v > 0:
+                        vol_breakdown[label] = v
+            if vol_breakdown:
+                comp_df = pd.DataFrame(list(vol_breakdown.items()), columns=["Atividade", "Quantidade"])
+                comp_df = comp_df.sort_values("Quantidade", ascending=True)
+                st.bar_chart(comp_df.set_index("Atividade"), horizontal=True, color=COR_PRIMARIA, height=270)
+            else:
+                st.info("Sem dados de composição de atividades para o período.")
 
-        # Seção de detalhes por tipo de atividade (produtividade)
+        # ── TABELAS DETALHADAS E DOWNLOAD ──────────────────────────────────────
         st.markdown("---")
-        st.markdown("##### 📋 Seu Detalhamento por Atividade")
-        _detail_cols = [c for c in df_filtrado.columns if c in ([COL_VOL_TOTAL] + list(VOL_COLS_AMBOS))]
-        if _detail_cols:
-            _detail_df = df_filtrado[_detail_cols].sum().reset_index()
-            _detail_df.columns = ["Atividade", "Quantidade"]
-            _detail_df = _detail_df[_detail_df["Quantidade"] > 0].sort_values("Quantidade", ascending=False)
-            if not _detail_df.empty:
-                st.dataframe(_detail_df, use_container_width=True, hide_index=True)
-
-        # ── Dados Detalhados (resumo mensal) ─────────────────────────────────
-        st.markdown("---")
-        st.markdown("#### 📋 Seus Dados por Período")
-        _resumo_det_u = resumo_geral(df_filtrado)
-        if not _resumo_det_u.empty:
-            _disp_cols_u = [COL_NOME, "Setor", "Dias_Trabalhados", COL_VOL_TOTAL, "Media_Diaria"]
-            _disp_labels_u = ["Analista", "Setor", "Dias", "Vol. Total", "Média/Dia"]
-            _sv_u = get_sector_vol_cols(setor_selecionado, _resumo_det_u.columns)
-            _vk_u = list(_sv_u.keys()); _vl_u = list(_sv_u.values())
-            _avail_u = [c for c in _disp_cols_u if c in _resumo_det_u.columns]
-            _det_u = _resumo_det_u[_avail_u + _vk_u].copy()
-            _det_u.columns = _disp_labels_u[:len(_avail_u)] + _vl_u
-            _det_u = _det_u.sort_values("Vol. Total", ascending=False).reset_index(drop=True)
-            _det_u.index += 1; _det_u.index.name = "#"
-            st.dataframe(_det_u, use_container_width=True)
+        st.markdown("##### 📋 Seus Registros Detalhados por Período")
+        _disp_cols_u = [COL_NOME, "Setor", "Dias_Trabalhados", COL_VOL_TOTAL, "Media_Diaria"]
+        _disp_labels_u = ["Analista", "Setor", "Dias", "Vol. Total", "Média/Dia"]
+        _sv_u = get_sector_vol_cols(setor_selecionado, _resumo_user.columns)
+        _vk_u = list(_sv_u.keys()); _vl_u = list(_sv_u.values())
+        _avail_u = [c for c in _disp_cols_u if c in _resumo_user.columns]
+        _det_u = _resumo_user[_avail_u + _vk_u].copy()
+        _det_u.columns = _disp_labels_u[:len(_avail_u)] + _vl_u
+        _det_u = _det_u.sort_values("Vol. Total", ascending=False).reset_index(drop=True)
+        _det_u.index += 1; _det_u.index.name = "#"
+        st.dataframe(_det_u, use_container_width=True)
 
         st.markdown("---")
-        st.markdown("#### 📅 Histórico Diário")
+        st.markdown("##### 📅 Seu Histórico Diário Completo")
         _raw_cols_u = [COL_DATA, COL_MES, COL_VOL_TOTAL, COL_DPA_RESULTADO]
         _vol_raw_u = [c for c in VOL_COLS.keys() if c in df_filtrado.columns]
         _raw_cols_u += _vol_raw_u
         _raw_avail_u = [c for c in _raw_cols_u if c in df_filtrado.columns]
         st.dataframe(
             df_filtrado[_raw_avail_u].sort_values([COL_DATA]),
-            use_container_width=True, height=350,
+            use_container_width=True, height=320,
         )
         _csv_u = df_filtrado[_raw_avail_u].to_csv(index=False).encode("utf-8")
         st.download_button("📥 Baixar meus dados (CSV)", _csv_u, "meus_dados_produtividade.csv", "text/csv")
