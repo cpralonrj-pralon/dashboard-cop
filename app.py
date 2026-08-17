@@ -516,6 +516,40 @@ def kpi_card(label, value, color, delta=None, suffix=""):
     """
 
 
+def render_goal_meter(label: str, val: float | None, goal: float, suffix: str = "%"):
+    if val is None or (isinstance(val, float) and np.isnan(val)):
+        pct_fill = 0
+        val_str = "—"
+        sub_txt = "Sem dados no período (considerado dentro da meta)"
+        bar_color = COR_INFO
+    else:
+        pct_fill = min(100, max(0, (val / goal) * 100))
+        val_str = f"{val:.1f}{suffix}"
+        diff = val - goal
+        if diff >= 0:
+            sub_txt = f"✅ Meta atingida (+{diff:.1f}{suffix} acima da meta)"
+            bar_color = COR_SUCESSO
+        elif val >= (goal - 5.0):
+            sub_txt = f"⚠️ Falta +{abs(diff):.1f}{suffix} para atingir a meta de {goal:.0f}{suffix}"
+            bar_color = COR_ALERTA
+        else:
+            sub_txt = f"🔴 Falta +{abs(diff):.1f}{suffix} para atingir a meta de {goal:.0f}{suffix}"
+            bar_color = COR_PERIGO
+    
+    return f"""
+    <div style="background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--r-md); padding: 0.85rem 1.1rem; margin-bottom: 0.55rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:0.35rem;">
+            <span style="font-size:0.78rem; font-weight:700; color:var(--text2);">{label}</span>
+            <span style="font-size:0.95rem; font-weight:800; color:{bar_color};">{val_str} <span style="font-size:0.72rem; opacity:0.7;">/ {goal:.0f}{suffix}</span></span>
+        </div>
+        <div style="background: var(--tab-inact); height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 0.35rem;">
+            <div style="background: {bar_color}; height: 100%; width: {pct_fill:.1f}%; border-radius: 4px;"></div>
+        </div>
+        <div style="font-size: 0.73rem; color: var(--text3);">{sub_txt}</div>
+    </div>
+    """
+
+
 def _dpa_color(pct):
     if pct is None or (isinstance(pct, float) and np.isnan(pct)):
         return COR_INFO
@@ -2522,6 +2556,118 @@ with tabs[0]:
             </div>
         </div>
         """, unsafe_allow_html=True)
+
+        # ── METAS PRESCRITIVAS DE CERTIFICAÇÃO (GOAL METERS) ───────────────────
+        st.markdown('<div class="section-header">🎯 Progresso das Metas de Certificação</div>', unsafe_allow_html=True)
+        _g_cols = st.columns(3)
+        
+        # 1. ETIT / ETIT HFC
+        _cert_etit_val = None
+        if setor_label == "RESIDENCIAL":
+            if res_ind_loaded and not df_res_filtrado.empty:
+                _sub = df_res_filtrado[df_res_filtrado[RES_COL_INDICADOR_NOME] == RES_IND_ETIT_FIBRA_HFC]
+                if not _sub.empty and RES_COL_VOLUME in _sub.columns:
+                    _v = float(_sub[RES_COL_VOLUME].sum())
+                    if _v > 0:
+                        _ad = float(_sub["ADERENTE" if "ADERENTE" in _sub.columns else RES_COL_IND_VAL].sum())
+                        _cert_etit_val = (_ad / _v) * 100.0
+            _lbl_etit = "ETIT Fibra HFC %"
+        else:
+            if etit_loaded and not df_etit_filtrado.empty:
+                _ev = float(df_etit_filtrado[ETIT_COL_VOLUME].sum()) if ETIT_COL_VOLUME in df_etit_filtrado.columns else 0.0
+                _ad = float(df_etit_filtrado[ETIT_COL_INDICADOR_VAL].sum()) if ETIT_COL_INDICADOR_VAL in df_etit_filtrado.columns else 0.0
+                if _ev > 0:
+                    _cert_etit_val = (_ad / _ev) * 100.0
+            _lbl_etit = "ETIT por Evento %"
+
+        # 2. DPA Oficial
+        _cert_dpa_val = None
+        if dpa_loaded and not df_dpa_filtrado.empty and "DPA_Pct_Oficial" in df_dpa_filtrado.columns:
+            _dpa_v = df_dpa_filtrado["DPA_Pct_Oficial"].iloc[0]
+            if pd.notna(_dpa_v):
+                _cert_dpa_val = float(_dpa_v)
+
+        # 3. Assertividade (Média HFC+GPON) para Residencial ou Aderência Geral
+        _cert_assert_val = None
+        if setor_label == "RESIDENCIAL":
+            if res_ind_loaded and not df_res_filtrado.empty:
+                _hfc_pct = None; _gpon_pct = None
+                _sub_hfc = df_res_filtrado[df_res_filtrado[RES_COL_INDICADOR_NOME] == RES_IND_ASSERT_FIBRA_HFC]
+                if not _sub_hfc.empty and RES_COL_VOLUME in _sub_hfc.columns:
+                    _vh = float(_sub_hfc[RES_COL_VOLUME].sum())
+                    if _vh > 0:
+                        _adh = float(_sub_hfc["ADERENTE" if "ADERENTE" in _sub_hfc.columns else RES_COL_IND_VAL].sum())
+                        _hfc_pct = (_adh / _vh) * 100.0
+                _sub_gpon = df_res_filtrado[df_res_filtrado[RES_COL_INDICADOR_NOME] == RES_IND_ASSERT_GPON]
+                if not _sub_gpon.empty and RES_COL_VOLUME in _sub_gpon.columns:
+                    _vg = float(_sub_gpon[RES_COL_VOLUME].sum())
+                    if _vg > 0:
+                        _adg = float(_sub_gpon["ADERENTE" if "ADERENTE" in _sub_gpon.columns else RES_COL_IND_VAL].sum())
+                        _gpon_pct = (_adg / _vg) * 100.0
+                if _hfc_pct is not None and _gpon_pct is not None:
+                    _cert_assert_val = (_hfc_pct + _gpon_pct) / 2.0
+                elif _hfc_pct is not None:
+                    _cert_assert_val = _hfc_pct
+                elif _gpon_pct is not None:
+                    _cert_assert_val = _gpon_pct
+            _lbl_assert = "Média Assertividade %"
+            _goal_assert = 85.0
+        else:
+            if fech_sir_loaded and not df_fech_sir.empty:
+                _n_tot = float(df_fech_sir[FECH_SIR_COL_VOLUME].sum())
+                _n_ass = float(df_fech_sir["ASSERTIVO"].sum()) if "ASSERTIVO" in df_fech_sir.columns else 0.0
+                if _n_tot > 0:
+                    _cert_assert_val = (_n_ass / _n_tot) * 100.0
+            _lbl_assert = "Assertividade Madrugada %"
+            _goal_assert = 90.0
+
+        with _g_cols[0]:
+            st.markdown(render_goal_meter(_lbl_etit, _cert_etit_val, 90.0), unsafe_allow_html=True)
+        with _g_cols[1]:
+            st.markdown(render_goal_meter("DPA Oficial Acumulado %", _cert_dpa_val, 90.0), unsafe_allow_html=True)
+        with _g_cols[2]:
+            st.markdown(render_goal_meter(_lbl_assert, _cert_assert_val, _goal_assert), unsafe_allow_html=True)
+
+        st.markdown("")
+
+        # ── LEITURA DO DESEMPENHO E AÇÕES RECOMENDADAS ─────────────────────────
+        _hl_items = []
+        if not df_filtrado.empty:
+            _r = _resumo_user.iloc[0]
+            _u_vol_hl   = _r.get(COL_VOL_TOTAL, 0)
+            _u_media_hl = _r.get("Media_Diaria", 0)
+            _c_vol = COR_SUCESSO if (_tm_vol_medio and _u_vol_hl >= _tm_vol_medio) else COR_ALERTA
+            _c_med = COR_SUCESSO if (_tm_media_diaria and _u_media_hl >= _tm_media_diaria) else COR_ALERTA
+            _hl_items.append(("Vol. Total Produt.", f"{_u_vol_hl:,.0f}", _c_vol))
+            _hl_items.append(("Média/Dia Produt.", f"{_u_media_hl:,.1f}", _c_med))
+        if _cert_etit_val is not None:
+            _c_et = COR_SUCESSO if _cert_etit_val >= 90.0 else (COR_ALERTA if _cert_etit_val >= 70.0 else COR_PERIGO)
+            _hl_items.append((_lbl_etit, f"{_cert_etit_val:.1f}%", _c_et))
+        if _cert_dpa_val is not None:
+            _hl_items.append(("DPA Oficial %", f"{_cert_dpa_val:.1f}%", _dpa_color(_cert_dpa_val)))
+        if _cert_assert_val is not None:
+            _c_ass = COR_SUCESSO if _cert_assert_val >= _goal_assert else COR_PERIGO
+            _hl_items.append((_lbl_assert, f"{_cert_assert_val:.1f}%", _c_ass))
+
+        if _hl_items:
+            _hl_fb = build_highlight_feedback(_hl_items)
+            st.markdown("##### 🧭 Leitura de Desempenho & Ações Recomendadas")
+            _fb_cards = [
+                ("✅ Ponto Forte", _hl_fb["ponto_forte"], COR_SUCESSO),
+                ("⚠️ Ponto de Atenção", _hl_fb["ponto_atencao"], COR_ALERTA),
+                ("💡 Plano de Ação", _hl_fb["sugestao"], COR_INFO),
+            ]
+            _fb_cols = st.columns(3)
+            for _ci, (_titulo, _texto, _cor) in enumerate(_fb_cards):
+                with _fb_cols[_ci]:
+                    st.markdown(
+                        f'<div class="kpi-card" style="border-left-color:{_cor};">'
+                        f'<div class="kpi-label" style="color:{_cor};">{_titulo}</div>'
+                        f'<div class="kpi-delta" style="font-size:0.86rem; opacity:0.95; line-height:1.45; margin-top:0.35rem;">{_texto}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+            st.markdown("")
 
         # ── KPI CARDS COMPARATIVOS (Você vs Média da Equipe) ─────────────────
         st.markdown('<div class="section-header">📊 Seu Desempenho no Período</div>', unsafe_allow_html=True)
