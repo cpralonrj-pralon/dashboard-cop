@@ -1128,7 +1128,7 @@ if _is_admin and st.session_state["cop_page"] == "upload":
             "⚠️ **Armazenamento em nuvem (R2) não configurado.** "
             "Arquivos enviados e senhas serão perdidos após cada atualização/redeploy. "
             "Configure as variáveis `R2_ENDPOINT_URL`, `R2_ACCESS_KEY_ID` e `R2_SECRET_ACCESS_KEY` "
-            "no painel do Railway para persistência permanente.",
+            "no painel do Streamlit Cloud (Secrets) ou Railway para persistência permanente.",
             icon="⚠️",
         )
 
