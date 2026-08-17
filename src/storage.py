@@ -13,16 +13,29 @@ _r2_bucket = None
 _r2_checked = False
 
 
+def get_env_or_secret(key: str, default: str = "") -> str:
+    val = os.environ.get(key, "").strip()
+    if val:
+        return val
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and key in st.secrets:
+            return str(st.secrets[key]).strip()
+    except Exception:
+        pass
+    return default
+
+
 def _get_client():
     global _r2_client, _r2_bucket, _r2_checked
     if _r2_checked:
         return _r2_client, _r2_bucket
 
     _r2_checked = True
-    endpoint  = os.environ.get("R2_ENDPOINT_URL", "").strip()
-    access_key = os.environ.get("R2_ACCESS_KEY_ID", "").strip()
-    secret_key = os.environ.get("R2_SECRET_ACCESS_KEY", "").strip()
-    bucket     = os.environ.get("R2_BUCKET_NAME", "cop-dashboard").strip()
+    endpoint   = get_env_or_secret("R2_ENDPOINT_URL")
+    access_key = get_env_or_secret("R2_ACCESS_KEY_ID")
+    secret_key = get_env_or_secret("R2_SECRET_ACCESS_KEY")
+    bucket     = get_env_or_secret("R2_BUCKET_NAME", "cop-dashboard")
 
     if not all([endpoint, access_key, secret_key]):
         return None, None

@@ -1,16 +1,10 @@
 [server]
 headless = true
-address = "0.0.0.0"
-enableCORS = false
-enableXsrfProtection = false
 maxUploadSize = 500
 maxMessageSize = 500
-fileWatcherType = "none"
-runOnSave = false
 
 [browser]
 gatherUsageStats = false
-serverAddress = "0.0.0.0"
 
 [theme]
 base            = "light"

@@ -60,7 +60,7 @@ def ensure_users_initialized(equipe_ids: set) -> int:
             data[uid_up] = {"hash": hashed, "salt": salt, "must_change": True}
             added += 1
     # Se FORCE_ADMIN_PASSWORD definido, força redefinição da senha do admin no R2
-    force_pwd = os.environ.get("FORCE_ADMIN_PASSWORD", "").strip()
+    force_pwd = storage.get_env_or_secret("FORCE_ADMIN_PASSWORD")
     force_admin = False
     if force_pwd:
         hashed, salt = _hash_password(force_pwd)
@@ -83,9 +83,9 @@ def list_missing_tracked_ids(tracked_ids: set) -> list:
 
 def verify_login(username: str, password: str):
     uid = username.strip().upper()
-    # Override de emergência para admin via variável de ambiente (recuperação de acesso)
+    # Override de emergência para admin via variável de ambiente ou Streamlit Secrets
     if uid == AUTH_ADMIN_ID:
-        override = os.environ.get("ADMIN_PASSWORD_OVERRIDE", "").strip()
+        override = storage.get_env_or_secret("ADMIN_PASSWORD_OVERRIDE")
         if override and password == override:
             return True, False
     data = _load_passwords()
