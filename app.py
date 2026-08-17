@@ -458,7 +458,7 @@ hr {{ border-color: var(--border) !important; opacity: 1 !important; }}
 .dpa-card .dpa-setor {{ font-size: 0.72rem; color: var(--text3); margin-top: 0.15rem; }}
 .dpa-semaforo-verde    {{ color: var(--success); }}
 /* ═══════════ ANALYST COCKPIT STYLES ═══════════ */
-.analyst-hero-banner {
+.analyst-hero-banner {{
     background: linear-gradient(135deg, rgba(237,28,36,0.12) 0%, rgba(165,14,20,0.22) 100%);
     border: 1px solid var(--claro-red-bd);
     border-radius: var(--r-xl);
@@ -468,11 +468,11 @@ hr {{ border-color: var(--border) !important; opacity: 1 !important; }}
     align-items: center;
     justify-content: space-between;
     box-shadow: var(--shadow);
-}
-.analyst-greeting { font-size: 1.4rem; font-weight: 800; color: var(--text1); margin: 0; }
-.analyst-subgreeting { font-size: 0.84rem; color: var(--text3); margin-top: 0.2rem; }
-.analyst-badge-row { display: flex; align-items: center; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }
-.analyst-pill {
+}}
+.analyst-greeting {{ font-size: 1.4rem; font-weight: 800; color: var(--text1); margin: 0; }}
+.analyst-subgreeting {{ font-size: 0.84rem; color: var(--text3); margin-top: 0.2rem; }}
+.analyst-badge-row {{ display: flex; align-items: center; gap: 8px; margin-top: 0.6rem; flex-wrap: wrap; }}
+.analyst-pill {{
     padding: 4px 12px;
     border-radius: 20px;
     font-size: 0.75rem;
@@ -480,11 +480,11 @@ hr {{ border-color: var(--border) !important; opacity: 1 !important; }}
     display: inline-flex;
     align-items: center;
     gap: 5px;
-}
-.analyst-pill-setor { background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }
-.analyst-pill-cert-ok { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }
-.analyst-pill-cert-alert { background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bg); }
-.analyst-pill-cert-danger { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }
+}}
+.analyst-pill-setor {{ background: var(--info-bg); color: var(--info); border: 1px solid var(--info-bd); }}
+.analyst-pill-cert-ok {{ background: var(--success-bg); color: var(--success); border: 1px solid var(--success-bd); }}
+.analyst-pill-cert-alert {{ background: var(--warning-bg); color: var(--warning); border: 1px solid var(--warning-bg); }}
+.analyst-pill-cert-danger {{ background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-bd); }}
 
 /* Responsive */
 @media (max-width: 768px) {{
