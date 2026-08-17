@@ -3837,59 +3837,103 @@ if dpa_loaded and _tab_dpa_idx is not None:
         mes_num_dpa   = dpa_mes_info.get("mes_num")
         # DPA Equipe — média das médias setoriais (Empresarial e Residencial
         # com peso igual). Mesma fórmula usada nos KPIs do header.
-        dpa_geral_pct = _dpa_equipe_pct(df_dpa_filtrado)
-
-        st.markdown(
-            f"#### 📊 Ocupação DPA — Dados Oficiais · "
-            f"Mês mais recente: **{mes_nome_dpa} 2026**"
-        )
-
-        if mes_num_dpa:
-            st.caption(
-                f"ℹ️ O mês mais recente com dados disponíveis na planilha é **{mes_nome_dpa}**. "
-                f"Os percentuais refletem a ocupação acumulada de Janeiro a {mes_nome_dpa} de 2026."
+        if _is_admin:
+            # ── Visão Admin: KPIs Consolidados da Equipe ──
+            dpa_geral_pct = _dpa_equipe_pct(df_dpa_filtrado)
+            st.markdown(
+                f"#### 📊 Ocupação DPA — Dados Oficiais · "
+                f"Mês mais recente: **{mes_nome_dpa} 2026**"
             )
+            if mes_num_dpa:
+                st.caption(
+                    f"ℹ️ O mês mais recente com dados disponíveis na planilha é **{mes_nome_dpa}**. "
+                    f"Os percentuais refletem a ocupação acumulada de Janeiro a {mes_nome_dpa} de 2026."
+                )
 
-        # KPIs gerais
-        k1, k2, k3, k4 = st.columns(4)
-        with k1:
-            dpa_g_str = f"{dpa_geral_pct:.1f}" if dpa_geral_pct else "—"
-            st.markdown(kpi_card(f"DPA Equipe ({mes_nome_dpa[:3]})", dpa_g_str, _dpa_color(dpa_geral_pct), suffix="%"),
-                        unsafe_allow_html=True)
-        with k2:
-            st.markdown(kpi_card("Analistas Monitorados", str(len(df_dpa_filtrado)), COR_INFO), unsafe_allow_html=True)
-        with k3:
-            above = (df_dpa_filtrado["DPA_Pct_Oficial"] >= DPA_THRESHOLD_OK).sum()
-            st.markdown(kpi_card(f"Acima de {DPA_THRESHOLD_OK:.0f}% 🟢", str(above), COR_SUCESSO), unsafe_allow_html=True)
-        with k4:
-            below = (df_dpa_filtrado["DPA_Pct_Oficial"] < DPA_THRESHOLD_ALERTA).sum()
-            st.markdown(kpi_card(f"Abaixo de {DPA_THRESHOLD_ALERTA:.0f}% 🔴", str(below), COR_PERIGO), unsafe_allow_html=True)
+            k1, k2, k3, k4 = st.columns(4)
+            with k1:
+                dpa_g_str = f"{dpa_geral_pct:.1f}" if dpa_geral_pct else "—"
+                st.markdown(kpi_card(f"DPA Equipe ({mes_nome_dpa[:3]})", dpa_g_str, _dpa_color(dpa_geral_pct), suffix="%"),
+                            unsafe_allow_html=True)
+            with k2:
+                st.markdown(kpi_card("Analistas Monitorados", str(len(df_dpa_filtrado)), COR_INFO), unsafe_allow_html=True)
+            with k3:
+                above = (df_dpa_filtrado["DPA_Pct_Oficial"] >= DPA_THRESHOLD_OK).sum()
+                st.markdown(kpi_card(f"Acima de {DPA_THRESHOLD_OK:.0f}% 🟢", str(above), COR_SUCESSO), unsafe_allow_html=True)
+            with k4:
+                below = (df_dpa_filtrado["DPA_Pct_Oficial"] < DPA_THRESHOLD_ALERTA).sum()
+                st.markdown(kpi_card(f"Abaixo de {DPA_THRESHOLD_ALERTA:.0f}% 🔴", str(below), COR_PERIGO), unsafe_allow_html=True)
 
-        st.markdown("")
-        st.markdown("---")
+            st.markdown("")
+            st.markdown("---")
 
-        # Comparação com a equipe (apenas não-admin)
-        if not _is_admin and not df_dpa_filtrado.empty:
+        else:
+            # ── Visão Analista: Painel Pessoal de Ocupação DPA ──
             _u_dpa_pct = df_dpa_filtrado["DPA_Pct_Oficial"].iloc[0] if not df_dpa_filtrado.empty else None
-            # Comparação restrita ao setor do analista
             _df_dpa_for_user = _df_dpa_team_full
             if _user_setor and _df_dpa_team_full is not None and "Setor" in _df_dpa_team_full.columns:
                 _df_dpa_for_user = _df_dpa_team_full[_df_dpa_team_full["Setor"] == _user_setor]
             _dpa_tm_all = _dpa_equipe_pct(_df_dpa_for_user)
-            st.markdown("##### 📊 Seu DPA vs Equipe")
-            _dpa_cmp_cols = st.columns(3)
+
+            # Banner de Atualização
+            st.markdown(f"""
+            <div class="kpi-card" style="border-left-color: var(--info); text-align: left; padding: 1.1rem 1.4rem; margin-bottom: 1.2rem;">
+                <div style="font-size: 1.15rem; font-weight: 800; color: var(--text1);">📅 Posição Oficial de Ocupação DPA</div>
+                <div style="font-size: 0.85rem; color: var(--text2); margin-top: 0.25rem;">
+                    Dados oficiais acumulados de <strong>Janeiro a {mes_nome_dpa} de 2026</strong>.
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown('<div class="section-header">📊 Seu DPA vs Equipe</div>', unsafe_allow_html=True)
+            _dpa_cmp_cols = st.columns(4)
+
             with _dpa_cmp_cols[0]:
                 if _u_dpa_pct is not None:
                     _dc = _dpa_color(_u_dpa_pct)
+                    _dpa_delta = (_u_dpa_pct - DPA_THRESHOLD_OK)
                     st.markdown(kpi_card("Seu DPA Oficial", f"{_u_dpa_pct:.1f}", _dc, suffix="%"), unsafe_allow_html=True)
             with _dpa_cmp_cols[1]:
-                # Comparar contra a média da equipe rastreada (_dpa_tm_all),
-                # não contra o agregado da planilha inteira.
                 if _dpa_tm_all is not None and pd.notna(_dpa_tm_all):
-                    st.markdown(kpi_card(f"DPA Médio Equipe ({mes_nome_dpa[:3]})", f"{_dpa_tm_all:.1f}", _dpa_color(_dpa_tm_all), suffix="%"), unsafe_allow_html=True)
+                    st.markdown(kpi_card(f"Média Equipe ({mes_nome_dpa[:3]})", f"{_dpa_tm_all:.1f}", _dpa_color(_dpa_tm_all), suffix="%"), unsafe_allow_html=True)
             with _dpa_cmp_cols[2]:
+                if _u_dpa_pct is not None and _dpa_tm_all is not None and pd.notna(_dpa_tm_all):
+                    _diff_eq = _u_dpa_pct - _dpa_tm_all
+                    _diff_color = COR_SUCESSO if _diff_eq >= 0 else COR_PERIGO
+                    _diff_icon = "▲ +" if _diff_eq >= 0 else "▼ "
+                    st.markdown(kpi_card("Diferença vs Equipe", f"{_diff_icon}{_diff_eq:.1f}", _diff_color, suffix="%"), unsafe_allow_html=True)
+            with _dpa_cmp_cols[3]:
                 if _u_dpa_pct is not None:
-                    st.markdown(kpi_card("Status", _dpa_semaforo(_u_dpa_pct), _dpa_color(_u_dpa_pct)), unsafe_allow_html=True)
+                    if _u_dpa_pct >= DPA_THRESHOLD_OK:
+                        _status_txt = "🟢 Certificando"
+                        _status_desc = f"DPA ≥ {DPA_THRESHOLD_OK:.0f}%"
+                        _status_c = COR_SUCESSO
+                    elif _u_dpa_pct >= DPA_THRESHOLD_ALERTA:
+                        _status_txt = "🟡 Em Alerta"
+                        _status_desc = f"{DPA_THRESHOLD_ALERTA:.0f}% ≤ DPA < {DPA_THRESHOLD_OK:.0f}%"
+                        _status_c = COR_ALERTA
+                    else:
+                        _status_txt = "🔴 Fora da Meta"
+                        _status_desc = f"DPA < {DPA_THRESHOLD_ALERTA:.0f}%"
+                        _status_c = COR_PERIGO
+                    
+                    st.markdown(
+                        f'<div class="kpi-card" style="border-left-color:{_status_c};">'
+                        f'<div class="kpi-label">Status da Meta</div>'
+                        f'<div class="kpi-value" style="color:{_status_c}; font-size:1.15rem;">{_status_txt}</div>'
+                        f'<div class="kpi-delta" style="color:{_status_c};">{_status_desc}</div>'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+
+            st.markdown("")
+            st.markdown("---")
+            st.markdown("##### 💡 Regra de Avaliação da Meta DPA")
+            st.markdown(f"""
+            - 🟢 **Dentro da Meta (Certificando):** DPA acumulado **≥ {DPA_THRESHOLD_OK:.0f}%**
+            - 🟡 **Em Alerta (Certificando):** DPA acumulado entre **{DPA_THRESHOLD_ALERTA:.0f}% e {DPA_THRESHOLD_OK - 0.1:.1f}%**
+            - 🔴 **Fora da Meta (Não Certificando):** DPA acumulado **< {DPA_THRESHOLD_ALERTA:.0f}%**
+            """)
             st.markdown("---")
 
         # ---- Ranking principal (apenas admin) ----
