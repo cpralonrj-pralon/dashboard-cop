@@ -8,7 +8,7 @@ import streamlit as st
 from src.auth import (
     ensure_users_initialized, show_login_page, show_change_password_page,
     save_uploaded_file, load_saved_files_to_session, saved_files_exist,
-    AUTH_ADMIN_ID, reset_non_admin_passwords, reset_user_password,
+    AUTH_ADMIN_ID, reset_user_password, reset_user_passwords,
     list_missing_tracked_ids,
     get_upload_timestamp,
 )
@@ -20,8 +20,8 @@ from src import storage as _storage
 
 from src.config import (
     BASE_EQUIPE, EQUIPE_IDS, LIDERES_IDS, VOL_COLS,
-    COORD_IDS, COORD_ANALYSTS_MAP, COORD_ANALYSTS_NAMES, COORD_TURNOS_MAP, PRALON_ANALYSTS,
-    SUB_ADMIN_EMP_IDS,
+    COORD_IDS, SUB_ADMIN_NAMES, COORD_ANALYSTS_MAP, COORD_ANALYSTS_NAMES, COORD_TURNOS_MAP, PRALON_ANALYSTS,
+    SUB_ADMIN_EMP_IDS, can_view_fechamento_toa_sir,
     ALL_TRACKED_IDS,
     VOL_COLS_RESIDENCIAL, VOL_COLS_EMPRESARIAL, VOL_COLS_AMBOS,
     REGIONAL_FILTRO,
@@ -1061,6 +1061,7 @@ _auth_user      = st.session_state["user_matricula"]   # matricula UPPER
 _is_super_admin = (_auth_user == AUTH_ADMIN_ID)
 _is_coord       = (_auth_user in COORD_IDS)
 _is_admin       = _is_super_admin or _is_coord
+_can_view_fech_sir = can_view_fechamento_toa_sir(_auth_user)
 
 # Determinar nome e matricula canônica do usuário
 from src.config import LOGIN_ALIASES as _LOGIN_ALIASES
@@ -1086,11 +1087,14 @@ _is_sub_admin_emp_member = (_auth_user in _sub_admin_emp_team_ids)
 # e reabrir o portal — o session_state é volátil, mas o R2/disco persiste.
 # O spinner só aparece na primeira carga da sessão (quando ainda não há dados);
 # nas demais interações `load_saved_files_to_session` retorna rapidamente sem rede.
+_excluded_saved_sources = (
+    {"uploaded_fech_sir_bytes"} if not _can_view_fech_sir else set()
+)
 if "uploaded_bytes" not in st.session_state:
     with st.spinner("Carregando seus dados..."):
-        load_saved_files_to_session()
+        load_saved_files_to_session(excluded_keys=_excluded_saved_sources)
 else:
-    load_saved_files_to_session()
+    load_saved_files_to_session(excluded_keys=_excluded_saved_sources)
 
 if _is_pralon:
     # Após carregar do R2, eleva para super-admin (acesso a upload e visão gerencial).
@@ -1199,6 +1203,8 @@ if _is_admin and st.session_state["cop_page"] == "upload":
         "uploaded_toa_bytes", "uploaded_dpa_bytes", "uploaded_fech_sir_bytes",
         "uploaded_chat_toa_bytes",
     ]}
+    if not _can_view_fech_sir:
+        _ld["uploaded_fech_sir_bytes"] = False
     _loaded_n = sum(_ld.values())
     _n_emp = len(BASE_EQUIPE[BASE_EQUIPE["Setor"] == "EMPRESARIAL"])
     _n_res = len(BASE_EQUIPE[BASE_EQUIPE["Setor"] == "RESIDENCIAL"])
@@ -1291,15 +1297,18 @@ if _is_admin and st.session_state["cop_page"] == "upload":
             "Selecionar arquivo", type=["xlsx", "xls"], key="upload_dpa", label_visibility="collapsed")
 
     with _c6:
-        st.markdown(
-            '<div class="upload-card">'
-            '<div class="upload-card-icon">🔗</div>'
-            '<div class="upload-card-title">Fechamento TOA × SIR</div>'
-            '<div class="upload-card-desc">Assertividade de fechamentos — Madrugada, mês mais recente detectado automaticamente. Opcional.</div>'
-            + _status_html("uploaded_fech_sir_bytes", "uploaded_fech_sir_bytes") +
-            '</div>', unsafe_allow_html=True)
-        uploaded_fech_sir = st.file_uploader(
-            "Selecionar arquivo", type=["xlsx", "xls"], key="upload_fech_sir", label_visibility="collapsed")
+        if _can_view_fech_sir:
+            st.markdown(
+                '<div class="upload-card">'
+                '<div class="upload-card-icon">🔗</div>'
+                '<div class="upload-card-title">Fechamento TOA × SIR</div>'
+                '<div class="upload-card-desc">Assertividade de fechamentos — Madrugada, mês mais recente detectado automaticamente. Opcional.</div>'
+                + _status_html("uploaded_fech_sir_bytes", "uploaded_fech_sir_bytes") +
+                '</div>', unsafe_allow_html=True)
+            uploaded_fech_sir = st.file_uploader(
+                "Selecionar arquivo", type=["xlsx", "xls"], key="upload_fech_sir", label_visibility="collapsed")
+        else:
+            uploaded_fech_sir = None
 
     # ── Upload cards — row 3 ──────────────────────────────────────────────────
     st.markdown("")
@@ -1400,7 +1409,7 @@ if _is_admin and st.session_state["cop_page"] == "upload":
         def _confirm_reset_dialog():
             target = st.session_state.get("_confirm_reset_target")
             if not target:
-                st.warning("Nenhum analista selecionado.")
+                st.warning("Nenhum usuário selecionado.")
                 return
             st.markdown(
                 f"Tem certeza de que deseja resetar a senha de "
@@ -1447,7 +1456,7 @@ if _is_admin and st.session_state["cop_page"] == "upload":
             with _c1:
                 if st.button("✅ Confirmar Reset em Massa", use_container_width=True,
                              type="primary", key="dlg_bulk_reset_confirm"):
-                    _n_reset = reset_non_admin_passwords(preserve_ids={"ADMIN"})
+                    _n_reset = reset_user_passwords(ALL_TRACKED_IDS)
                     st.session_state["_flash_success"] = (
                         f"✅ {_n_reset} senhas resetadas para 'claro123'."
                     )
@@ -1459,11 +1468,52 @@ if _is_admin and st.session_state["cop_page"] == "upload":
 
         st.markdown("---")
         st.markdown("### 🔑 Gerenciamento de Senhas dos Analistas")
-        _col_reset_all, _col_repair = st.columns([1, 1])
+        _col_reset_all, _col_reset_subadmins, _col_repair = st.columns([1, 1, 1])
         with _col_reset_all:
             if st.button("🔄 Resetar senhas de TODOS os analistas",
                          use_container_width=True, key="btn_reset_all"):
                 _confirm_bulk_reset_dialog()
+        with _col_reset_subadmins:
+            @st.dialog("Confirmar Reset dos Subadministradores")
+            def _confirm_subadmin_reset_dialog():
+                st.markdown(
+                    "Esta ação vai resetar as senhas de **Luiz, Vinicius, Alexandre, "
+                    "Patrick e Thiago Paroli** para `claro123`."
+                )
+                st.caption("Todos deverão trocar a senha no próximo acesso.")
+                _c1, _c2 = st.columns(2)
+                with _c1:
+                    if st.button(
+                        "✅ Confirmar",
+                        use_container_width=True,
+                        type="primary",
+                        key="dlg_subadmin_reset_confirm",
+                    ):
+                        try:
+                            _n_reset = reset_user_passwords(COORD_IDS)
+                            st.session_state["_flash_success"] = (
+                                f"✅ {_n_reset} senha(s) de subadministrador resetada(s) "
+                                "para 'claro123'."
+                            )
+                            st.toast(f"{_n_reset} subadministradores resetados", icon="🔑")
+                            st.rerun()
+                        except RuntimeError as _e:
+                            st.error(f"❌ {_e}")
+                with _c2:
+                    if st.button(
+                        "❌ Cancelar",
+                        use_container_width=True,
+                        key="dlg_subadmin_reset_cancel",
+                    ):
+                        st.rerun()
+
+            if _auth_user == AUTH_ADMIN_ID and st.button(
+                "🔐 Resetar TODOS os subadministradores",
+                use_container_width=True,
+                key="btn_reset_subadmins",
+                help="Reseta somente as contas administrativas de equipe; analistas não são afetados.",
+            ):
+                _confirm_subadmin_reset_dialog()
         with _col_repair:
             if st.button("🛠️ Reparar inicialização de senhas",
                          use_container_width=True, key="btn_repair_init",
@@ -1486,6 +1536,23 @@ if _is_admin and st.session_state["cop_page"] == "upload":
                 f"(não conseguem logar). Clique em **Reparar inicialização** acima. "
                 f"Faltando: {', '.join(_missing)}"
             )
+
+        if _auth_user == AUTH_ADMIN_ID:
+            with st.expander(
+                f"Reset individual por subadministrador ({len(SUB_ADMIN_NAMES)})"
+            ):
+                st.caption(
+                    "O reset altera somente a conta selecionada para `claro123` e "
+                    "exige a troca da senha no próximo acesso."
+                )
+                for _subadmin_id in sorted(
+                    SUB_ADMIN_NAMES,
+                    key=lambda user_id: SUB_ADMIN_NAMES[user_id],
+                ):
+                    _render_reset_row(
+                        _subadmin_id,
+                        SUB_ADMIN_NAMES[_subadmin_id],
+                    )
 
         st.markdown("#### Reset individual por analista")
 
@@ -1680,7 +1747,7 @@ df_fech_sir = pd.DataFrame()
 fech_sir_loaded = False
 fech_sir_anomes = None
 
-if "uploaded_fech_sir_bytes" in st.session_state:
+if _can_view_fech_sir and "uploaded_fech_sir_bytes" in st.session_state:
     try:
         if _is_evandro:
             _fech_team_ids = (
