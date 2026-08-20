@@ -385,6 +385,9 @@ RES_COL_INDICADOR_NOME  = "INDICADOR_NOME_ICG"
 RES_COL_ID_MOSTRA       = "ID_MOSTRA"
 RES_COL_LOGIN_FO        = "LOGIN_PRIMEIRO_ACIONAMENTO_FO"
 RES_COL_LOGIN_GPON      = "LOGIN_PRIMEIRO_ACIONAMENTO_GPON"
+# Layout 202608: a origem consolidou as duas colunas acima em uma única coluna.
+# O loader mantém suporte simultâneo ao schema legado e ao consolidado.
+RES_COL_LOGIN_UNIFIED   = "LOGIN_PRIMEIRO_ACIONAMENTO"
 RES_COL_LOGIN           = "RES_LOGIN"   # coluna unificada de login (calculada no loader)
 RES_COL_VOLUME          = "VOLUME"
 RES_COL_INDICADOR_VAL   = "INDICADOR"

@@ -67,7 +67,7 @@ from src.processors import (
     etit_por_turno, etit_evolucao_diaria,
     etit_aderencia_ral_rec_por_analista,
     # Residencial Indicadores
-    load_residencial_indicadores,
+    load_residencial_indicadores, ResidentialImportError, filter_residential_by_logins,
     res_kpis_por_indicador, res_por_regional,
     res_por_analista, res_por_natureza, res_por_solucao, res_por_impacto,
     res_evolucao_diaria,
@@ -1339,8 +1339,6 @@ if _is_admin and st.session_state["cop_page"] == "upload":
             st.session_state[key_name]           = _bytes
             st.session_state[key_name + "_name"] = file_obj.name
             if _saved_ids.get(key_name) != _md5:  # conteúdo realmente mudou
-                save_uploaded_file(key_name, _bytes)
-                _saved_ids[key_name] = _md5
                 # Invalida cache de parse para forçar reprocessamento com código atual.
                 # Necessário pois @st.cache_data é global e persiste entre sessões.
                 _parse_cache_map = {
@@ -1356,6 +1354,26 @@ if _is_admin and st.session_state["cop_page"] == "upload":
                     _parse_cache_map[key_name].clear()
                 if key_name == "uploaded_dpa_bytes":
                     _parse_fora_equipe_dpa.clear()
+
+                # O Residencial é validado antes de substituir a cópia no R2.
+                # As demais fontes preservam exatamente o fluxo já existente.
+                _processing_ok = True
+                if key_name == "uploaded_res_ind_bytes":
+                    try:
+                        with st.spinner("Validando Indicadores Residencial antes de salvar..."):
+                            _parse_res_ind(_bytes)
+                    except Exception as exc:
+                        _processing_ok = False
+                        st.error(
+                            "O upload de Indicadores Residencial não foi salvo porque "
+                            f"a validação falhou: {exc}"
+                        )
+                        st.session_state.pop(key_name, None)
+                        st.session_state.pop(key_name + "_name", None)
+
+                if _processing_ok:
+                    save_uploaded_file(key_name, _bytes)
+                    _saved_ids[key_name] = _md5
 
     # ── Stats bar ─────────────────────────────────────────────────────────────
     st.markdown("")
@@ -1576,15 +1594,41 @@ if "uploaded_etit_bytes" in st.session_state:
 # =====================================================
 df_res_ind = pd.DataFrame()
 res_ind_loaded = False
+_res_import_audit = {}
+_res_import_error = None
+_res_rows_imported = 0
 
 if "uploaded_res_ind_bytes" in st.session_state:
     try:
         df_res_ind = _parse_res_ind(st.session_state["uploaded_res_ind_bytes"])
+        _res_import_audit = dict(df_res_ind.attrs.get("residential_import_audit", {}))
+        _res_rows_imported = len(df_res_ind)
         res_ind_loaded = not df_res_ind.empty
         if not res_ind_loaded:
-            st.warning("Nenhum dado dos indicadores selecionados encontrado na planilha.")
+            st.error(
+                "A planilha Residencial foi reconhecida, mas não produziu nenhuma linha válida."
+            )
+    except ResidentialImportError as e:
+        _res_import_error = e
+        _res_import_audit = dict(e.audit)
+        _res_error_labels = {
+            "empty_file": "arquivo vazio",
+            "parse_error": "erro de parsing",
+            "schema_incompatible": "schema incompatível",
+            "required_column_missing": "coluna obrigatória ausente",
+            "no_valid_rows": "nenhuma linha válida",
+            "no_filter_results": "sem registros para o escopo da fonte",
+            "normalization_error": "erro de normalização",
+            "internal_model_error": "erro interno do modelo",
+        }
+        _res_error_label = _res_error_labels.get(e.code, "erro de importação")
+        st.error(f"Residencial — {_res_error_label}: {e}")
+        if _res_import_audit:
+            with st.expander("Diagnóstico da importação Residencial"):
+                st.json(_res_import_audit)
     except Exception as e:
-        st.warning(f"Erro ao processar planilha de Indicadores Residencial: {e}")
+        _res_import_error = e
+        st.error(f"Residencial — erro interno durante o processamento: {e}")
         with st.expander("Detalhes do erro"):
             st.code(traceback.format_exc())
 
@@ -1735,8 +1779,8 @@ if _is_super_admin:
     if res_ind_loaded and not df_res_ind.empty:
         try:
             _resumo_fora_res = fora_equipe_resumo_res_por_indicador_adm(df_res_ind)
-        except Exception:
-            pass
+        except Exception as exc:
+            st.warning(f"Residencial — erro ao calcular analistas externos: {exc}")
 
     if "uploaded_toa_bytes" in st.session_state:
         try:
@@ -1750,8 +1794,8 @@ if _is_coord:
     if res_ind_loaded and not df_res_ind.empty:
         try:
             _resumo_fora_res_coord = fora_equipe_resumo_res_por_indicador_coord(df_res_ind)
-        except Exception:
-            pass
+        except Exception as exc:
+            st.warning(f"Residencial — erro ao calcular comparação da coordenação: {exc}")
 
 # =====================================================
 # FILTRO MADRUGADA — super admin vê apenas analistas da equipe (EQUIPE_IDS)
@@ -1776,9 +1820,7 @@ if _is_super_admin and not _is_pralon_todos and not _is_evandro:
         # quando o filtro por login retornava vazio em alguma fração dos dados
         # (ex.: linhas GPON com login não casando com EQUIPE_IDS).
         if RES_LOGIN in df_res_ind.columns:
-            df_res_ind = df_res_ind[
-                df_res_ind[RES_LOGIN].str.upper().isin(_equipe_ids_upper)
-            ].copy()
+            df_res_ind = filter_residential_by_logins(df_res_ind, _equipe_ids_upper)
         elif RES_COL_ID_MOSTRA in df_res_ind.columns:
             df_res_ind = df_res_ind[
                 df_res_ind[RES_COL_ID_MOSTRA].astype(str).str.upper().isin(_equipe_ids_upper)
@@ -1857,9 +1899,7 @@ if _is_coord:
             # única forma confiável de garantir que cada coord só veja sua
             # equipe.
             if RES_LOGIN in df_res_ind.columns:
-                df_res_ind = df_res_ind[
-                    df_res_ind[RES_LOGIN].str.upper().isin(_coord_mats_upper)
-                ].copy()
+                df_res_ind = filter_residential_by_logins(df_res_ind, _coord_mats_upper)
             elif RES_COL_ID_MOSTRA in df_res_ind.columns:
                 df_res_ind = df_res_ind[
                     df_res_ind[RES_COL_ID_MOSTRA].astype(str).str.upper().isin(_coord_mats_upper)
@@ -1888,7 +1928,7 @@ if _is_pralon:
         df = df[df[COL_LOGIN].str.upper().isin(_pralon_ids_upper)].copy()
     if res_ind_loaded and not df_res_ind.empty:
         if RES_LOGIN in df_res_ind.columns:
-            df_res_ind = df_res_ind[df_res_ind[RES_LOGIN].str.upper().isin(_pralon_ids_upper)].copy()
+            df_res_ind = filter_residential_by_logins(df_res_ind, _pralon_ids_upper)
         elif RES_COL_ID_MOSTRA in df_res_ind.columns:
             df_res_ind = df_res_ind[
                 df_res_ind[RES_COL_ID_MOSTRA].astype(str).str.upper().isin(_pralon_ids_upper)
@@ -1964,7 +2004,7 @@ if not _is_admin:
     # Residencial Indicadores — filtra por login unificado (RES_LOGIN)
     if res_ind_loaded and not df_res_ind.empty:
         if RES_LOGIN in df_res_ind.columns:
-            df_res_ind = df_res_ind[df_res_ind[RES_LOGIN] == _mat_up].copy()
+            df_res_ind = filter_residential_by_logins(df_res_ind, {_mat_up})
         elif RES_COL_ID_MOSTRA in df_res_ind.columns:
             df_res_ind = df_res_ind[df_res_ind[RES_COL_ID_MOSTRA].str.upper() == _mat_up].copy()
         elif "Nome" in df_res_ind.columns and not _user_row.empty:
@@ -1995,6 +2035,8 @@ if not _is_admin:
     if df.empty:
         st.warning("Nenhum dado encontrado para sua matrícula. Verifique com o administrador.")
         st.stop()
+
+_res_rows_after_permission = len(df_res_ind) if res_ind_loaded else 0
 
 # =====================================================
 # SIDEBAR - FILTROS
@@ -2203,13 +2245,20 @@ if etit_loaded:
         df_etit_filtrado = df_etit_filtrado[df_etit_filtrado[ETIT_COL_LOGIN] == analista_selecionado]
 
 df_res_filtrado = df_res_ind.copy()
+_res_filter_trace = [
+    ("Após importação e normalização", _res_rows_imported),
+    ("Após filtro de permissão", _res_rows_after_permission),
+]
 if res_ind_loaded:
     if res_mes_sel != "Todos" and RES_ANOMES in df_res_filtrado.columns:
         df_res_filtrado = df_res_filtrado[df_res_filtrado[RES_ANOMES] == str(res_mes_sel).split(".")[0]]
+    _res_filter_trace.append(("Após filtro de período", len(df_res_filtrado)))
     if res_ind_selecionado != "Todos":
         df_res_filtrado = df_res_filtrado[df_res_filtrado[RES_COL_INDICADOR_NOME] == res_ind_selecionado]
+    _res_filter_trace.append(("Após filtro de indicador", len(df_res_filtrado)))
     if res_turno_sel != "Todos" and RES_COL_TURNO in df_res_filtrado.columns:
         df_res_filtrado = df_res_filtrado[df_res_filtrado[RES_COL_TURNO] == res_turno_sel]
+    _res_filter_trace.append(("Após filtro de turno", len(df_res_filtrado)))
 
 # DPA não precisa de filtro — já é o mês mais recente detectado automaticamente
 df_dpa_filtrado = df_dpa.copy()
@@ -3246,9 +3295,24 @@ if etit_loaded and _tab_etit_idx is not None:
 # ---- TAB: INDICADORES RESIDENCIAL ----
 if res_ind_loaded and _tab_res_idx is not None:
     with tabs[_tab_res_idx]:
-        st.markdown("#### 🏠 Indicadores Residencial — ETIT Fibra HFC · ETIT GPON · Assert. Acion. GPON")
+        st.markdown("#### 🏠 Indicadores Residencial — ETIT Fibra HFC · ETIT GPON · Assert. Acion. HFC/GPON")
+        if _is_admin:
+            with st.expander("🔎 Diagnóstico da carga Residencial", expanded=False):
+                for _trace_label, _trace_count in _res_filter_trace:
+                    st.write(f"{_trace_label}: **{_trace_count:,} registros**")
+                if _res_import_audit:
+                    st.caption(
+                        f"Aba: {_res_import_audit.get('selected_sheet', '—')} · "
+                        f"Cabeçalho: linha {_res_import_audit.get('header_row', '—')} · "
+                        f"Brutas: {_res_import_audit.get('raw_rows', 0):,} · "
+                        f"Válidas após normalização: "
+                        f"{_res_import_audit.get('rows_after_normalization', 0):,}"
+                    )
         if df_res_filtrado.empty:
-            st.warning("Nenhum dado encontrado com os filtros atuais.")
+            st.info(
+                "A planilha Residencial foi importada corretamente, porém nenhum registro "
+                "corresponde à combinação atual de permissão, período, indicador e turno."
+            )
         else:
             kpis_df = res_kpis_por_indicador(df_res_filtrado)
             st.markdown("##### 📊 Resumo por Indicador")
@@ -3259,6 +3323,8 @@ if res_ind_loaded and _tab_res_idx is not None:
                 label = RES_IND_LABELS.get(ind_name, ind_name)
                 color = RES_IND_COLORS.get(ind_name, "#5DADE2")
                 vol = int(row["Volume"]); ader = int(row["Aderentes"]); pct = row["Aderencia_Pct"]
+                nao_ader = int(row["Nao_Aderentes"])
+                nao_pct = row["Nao_Aderencia_Pct"]
                 tma_str = f"TMA: {_fmt_hms(row['TMA_Medio'])}" if "TMA_Medio" in row and pd.notna(row.get("TMA_Medio")) else ""
                 tmr_str = f"TMR: {_fmt_hms(row['TMR_Medio'])}" if "TMR_Medio" in row and pd.notna(row.get("TMR_Medio")) else ""
                 extra = " · ".join(filter(None, [tma_str, tmr_str]))
@@ -3269,6 +3335,7 @@ if res_ind_loaded and _tab_res_idx is not None:
                         f'<div class="ri-title">{label}</div>'
                         f'<div class="ri-vol" style="color:{color};">{vol:,}</div>'
                         f'<div class="ri-pct" style="color:{pct_color};">✅ {ader:,} aderentes &nbsp;·&nbsp; {pct:.1f}%</div>'
+                        f'<div class="ri-detail">⚠️ {nao_ader:,} não aderentes &nbsp;·&nbsp; {nao_pct:.1f}%</div>'
                         f'<div class="ri-detail">{extra}</div>'
                         f'</div>',
                         unsafe_allow_html=True,
@@ -3283,12 +3350,19 @@ if res_ind_loaded and _tab_res_idx is not None:
                     Volume=(RES_COL_VOLUME, "sum"),
                     Aderentes=("ADERENTE", "sum"),
                 ).reset_index()
+                _tg["Não Aderentes"] = (_tg["Volume"] - _tg["Aderentes"]).clip(lower=0)
                 _tg["Aderência %"] = (_tg["Aderentes"] / _tg["Volume"] * 100).round(1)
+                _tg["Não Aderência %"] = (
+                    _tg["Não Aderentes"] / _tg["Volume"] * 100
+                ).round(1)
                 _tg["_ord"] = _tg[RES_COL_TURNO].map({t: i for i, t in enumerate(_turno_order)}).fillna(99)
                 _tg = _tg.sort_values("_ord").drop(columns="_ord").rename(columns={RES_COL_TURNO: "Turno"})
                 st.dataframe(
-                    _tg[["Turno", "Volume", "Aderentes", "Aderência %"]].style
-                    .format({"Aderência %": "{:.1f}"})
+                    _tg[[
+                        "Turno", "Volume", "Aderentes", "Não Aderentes",
+                        "Aderência %", "Não Aderência %",
+                    ]].style
+                    .format({"Aderência %": "{:.1f}", "Não Aderência %": "{:.1f}"})
                     .background_gradient(cmap="RdYlGn", subset=["Aderência %"], vmin=50, vmax=100),
                     use_container_width=True, hide_index=True,
                 )
@@ -3316,7 +3390,9 @@ if res_ind_loaded and _tab_res_idx is not None:
                     continue
                 vol_total = int(sub[RES_COL_VOLUME].sum())
                 ader_total = int(sub["ADERENTE"].sum())
+                nao_ader_total = max(vol_total - ader_total, 0)
                 pct_total = (ader_total / vol_total * 100) if vol_total > 0 else 0
+                nao_pct_total = (nao_ader_total / vol_total * 100) if vol_total > 0 else 0
 
                 with st.expander(f"🔍 {label} — {vol_total:,} registros · {pct_total:.1f}% aderência",
                                  expanded=(len(ind_to_show) == 1)):
@@ -3325,6 +3401,40 @@ if res_ind_loaded and _tab_res_idx is not None:
                     # Pré-inicializa a chave em session_state para reduzir a chance da primeira
                     # interação do radio resetar o estado das abas.
                     if ind in {RES_IND_ETIT_GPON, RES_IND_ASSERT_GPON} and RES_COL_SERVICO in sub.columns:
+                        _svc_summary = sub.groupby(RES_COL_SERVICO).agg(
+                            Volume=(RES_COL_VOLUME, "sum"),
+                            Aderentes=("ADERENTE", "sum"),
+                        ).reset_index().rename(columns={RES_COL_SERVICO: "Serviço"})
+                        _svc_summary["Não Aderentes"] = (
+                            _svc_summary["Volume"] - _svc_summary["Aderentes"]
+                        ).clip(lower=0)
+                        _svc_summary["Aderência %"] = (
+                            _svc_summary["Aderentes"] / _svc_summary["Volume"] * 100
+                        ).round(1)
+                        _svc_summary["Não Aderência %"] = (
+                            _svc_summary["Não Aderentes"] / _svc_summary["Volume"] * 100
+                        ).round(1)
+                        st.markdown("**Consolidado por serviço GPON**")
+                        st.dataframe(
+                            _svc_summary.style.format(
+                                {"Aderência %": "{:.1f}", "Não Aderência %": "{:.1f}"}
+                            ),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+                        _unclassified = _svc_summary[
+                            ~_svc_summary["Serviço"].astype(str).str.upper().isin(
+                                {"GREENFIELD", "BROWNFIELD"}
+                            )
+                        ]
+                        if not _unclassified.empty:
+                            st.warning(
+                                "Há registros GPON fora de Greenfield/Brownfield: "
+                                + ", ".join(
+                                    f"{row['Serviço']} ({int(row['Volume'])})"
+                                    for _, row in _unclassified.iterrows()
+                                )
+                            )
                         _radio_key = f"res_nat_{ind}"
                         if _radio_key not in st.session_state:
                             st.session_state[_radio_key] = "Todos"
@@ -3341,7 +3451,9 @@ if res_ind_loaded and _tab_res_idx is not None:
                             ].copy()
                             vol_total  = int(sub[RES_COL_VOLUME].sum())  if not sub.empty else 0
                             ader_total = int(sub["ADERENTE"].sum())      if not sub.empty else 0
+                            nao_ader_total = max(vol_total - ader_total, 0)
                             pct_total  = (ader_total / vol_total * 100) if vol_total > 0 else 0
+                            nao_pct_total = (nao_ader_total / vol_total * 100) if vol_total > 0 else 0
                             if sub.empty:
                                 st.caption(
                                     f"⚠️ Nenhum caso **{_serv_sel}** registrado pela sua equipe "
@@ -3354,12 +3466,18 @@ if res_ind_loaded and _tab_res_idx is not None:
                     with sk2:
                         st.markdown(kpi_card("Aderentes", f"{ader_total:,}", COR_SUCESSO), unsafe_allow_html=True)
                     with sk3:
+                        st.markdown(kpi_card("Não Aderentes", f"{nao_ader_total:,}", COR_PERIGO), unsafe_allow_html=True)
+                    with sk4:
                         pct_c = COR_SUCESSO if pct_total >= 90 else (COR_ALERTA if pct_total >= 70 else COR_PERIGO)
                         st.markdown(kpi_card("Aderência", f"{pct_total:.1f}", pct_c, suffix="%"), unsafe_allow_html=True)
-                    with sk4:
+                    with sk5:
+                        st.markdown(kpi_card("Não Aderência", f"{nao_pct_total:.1f}", COR_PERIGO, suffix="%"), unsafe_allow_html=True)
+
+                    _time_cols = st.columns(2)
+                    with _time_cols[0]:
                         if RES_TMA in sub.columns:
                             st.markdown(kpi_card("TMA Médio", _fmt_hms(sub[RES_TMA].mean()), COR_INFO), unsafe_allow_html=True)
-                    with sk5:
+                    with _time_cols[1]:
                         if RES_TMR in sub.columns:
                             st.markdown(kpi_card("TMR Médio", _fmt_hms(sub[RES_TMR].mean()), COR_ALERTA), unsafe_allow_html=True)
 
@@ -3368,15 +3486,24 @@ if res_ind_loaded and _tab_res_idx is not None:
                         _anl_res = res_por_analista(sub, indicador=ind)
                         if not _anl_res.empty:
                             st.markdown("**👤 Por Analista**")
-                            _anl_tbl = _anl_res[["Nome", "Setor", "Volume", "Aderentes", "Aderencia_Pct"]].copy()
-                            _anl_tbl.columns = ["Analista", "Setor", "Volume", "Aderentes", "Aderência %"]
+                            _anl_tbl = _anl_res[[
+                                "Nome", "Setor", "Volume", "Aderentes", "Nao_Aderentes",
+                                "Aderencia_Pct", "Nao_Aderencia_Pct",
+                            ]].copy()
+                            _anl_tbl.columns = [
+                                "Analista", "Setor", "Volume", "Aderentes", "Não Aderentes",
+                                "Aderência %", "Não Aderência %",
+                            ]
                             _anl_tbl.index = range(1, len(_anl_tbl) + 1)
                             _anl_tbl.index.name = "#"
                             _col_anl, _col_chart = st.columns([1, 1])
                             with _col_anl:
                                 st.dataframe(
                                     _anl_tbl.style
-                                        .format({"Aderência %": "{:.1f}"}, na_rep="—")
+                                        .format({
+                                            "Aderência %": "{:.1f}",
+                                            "Não Aderência %": "{:.1f}",
+                                        }, na_rep="—")
                                         .background_gradient(cmap="RdYlGn", subset=["Aderência %"], vmin=50, vmax=100)
                                         .background_gradient(cmap="Blues", subset=["Volume"]),
                                     use_container_width=True,
@@ -3395,7 +3522,13 @@ if res_ind_loaded and _tab_res_idx is not None:
                                 Volume=(RES_COL_VOLUME, "sum"),
                                 Aderentes=("ADERENTE", "sum"),
                             ).reset_index()
+                            _rg_sub2["Não Aderentes"] = (
+                                _rg_sub2["Volume"] - _rg_sub2["Aderentes"]
+                            ).clip(lower=0)
                             _rg_sub2["Aderência %"] = (_rg_sub2["Aderentes"] / _rg_sub2["Volume"] * 100).round(1)
+                            _rg_sub2["Não Aderência %"] = (
+                                _rg_sub2["Não Aderentes"] / _rg_sub2["Volume"] * 100
+                            ).round(1)
                             _rg_sub2 = _rg_sub2.sort_values("Volume", ascending=False).reset_index(drop=True)
                             if not _rg_sub2.empty:
                                 if _is_admin:
@@ -3407,7 +3540,10 @@ if res_ind_loaded and _tab_res_idx is not None:
                                     )
                                 st.dataframe(
                                     _rg_sub2.style
-                                        .format({"Aderência %": "{:.1f}"}, na_rep="—")
+                                        .format({
+                                            "Aderência %": "{:.1f}",
+                                            "Não Aderência %": "{:.1f}",
+                                        }, na_rep="—")
                                         .background_gradient(cmap="Blues", subset=["Volume"])
                                         .background_gradient(cmap="RdYlGn", subset=["Aderência %"], vmin=50, vmax=100),
                                     use_container_width=True, hide_index=True,

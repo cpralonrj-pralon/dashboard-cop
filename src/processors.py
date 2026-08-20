@@ -2,6 +2,8 @@ import pandas as pd
 import numpy as np
 import openpyxl
 import io
+import re
+import unicodedata
 from src.config import (
     EQUIPE_IDS, ALL_TRACKED_IDS, BASE_EQUIPE, HEADER_ROW, SHEET_NAME_CANDIDATES,
     REGIONAL_FILTRO, LOGIN_ALIASES, COORD_ANALYSTS_NAMES,
@@ -24,7 +26,7 @@ from src.config import (
     RES_IND_ASSERT_FIBRA_HFC, RES_IND_ASSERT_GPON,
     RES_SHEET_CANDIDATES,
     RES_COL_INDICADOR_NOME, RES_COL_ID_MOSTRA, RES_COL_VOLUME,
-    RES_COL_LOGIN_FO, RES_COL_LOGIN_GPON, RES_COL_LOGIN,
+    RES_COL_LOGIN_FO, RES_COL_LOGIN_GPON, RES_COL_LOGIN_UNIFIED, RES_COL_LOGIN,
     RES_COL_INDICADOR_VAL, RES_COL_STATUS, RES_COL_REGIONAL,
     RES_COL_GRUPO, RES_COL_CIDADE, RES_COL_UF, RES_COL_TECNOLOGIA,
     RES_COL_SERVICO, RES_COL_NATUREZA, RES_COL_SINTOMA,
@@ -315,60 +317,287 @@ def etit_evolucao_diaria(df: pd.DataFrame) -> pd.DataFrame:
 # INDICADORES RESIDENCIAL — Loader e processadores
 # =====================================================
 
-def load_residencial_indicadores(uploaded_file) -> pd.DataFrame:
-    sheets = list_sheets(uploaded_file)
-    if hasattr(uploaded_file, "seek"):
-        uploaded_file.seek(0)
 
-    sheet_to_read = None
-    for candidate in RES_SHEET_CANDIDATES:
-        if candidate in sheets:
-            sheet_to_read = candidate
-            break
-    if sheet_to_read is None:
-        sheet_to_read = sheets[0]
+class ResidentialImportError(ValueError):
+    """Erro de importação Residencial com categoria e auditoria preservadas."""
 
-    df = pd.read_excel(uploaded_file, sheet_name=sheet_to_read)
+    def __init__(self, code: str, message: str, audit: dict | None = None):
+        super().__init__(message)
+        self.code = code
+        self.audit = audit or {}
 
-    if RES_COL_INDICADOR_NOME not in df.columns:
-        raise ValueError(
-            f"Coluna '{RES_COL_INDICADOR_NOME}' não encontrada na aba '{sheet_to_read}'. "
-            f"Abas disponíveis: {sheets}. Colunas lidas: {list(df.columns)[:20]}..."
+
+_RES_REQUIRED_COLUMNS = {
+    RES_COL_INDICADOR_NOME,
+    RES_COL_VOLUME,
+    RES_COL_INDICADOR_VAL,
+    RES_COL_REGIONAL,
+}
+
+_RES_EXPECTED_ANALYTIC_COLUMNS = {
+    RES_COL_ID_MOSTRA,
+    RES_COL_STATUS,
+    RES_COL_GRUPO,
+    RES_COL_SERVICO,
+    RES_COL_SOLUCAO,
+    RES_COL_IMPACTO,
+    RES_COL_DT_INICIO,
+    RES_COL_ANOMES,
+}
+
+_RES_KNOWN_COLUMNS = {
+    *_RES_REQUIRED_COLUMNS,
+    *_RES_EXPECTED_ANALYTIC_COLUMNS,
+    RES_COL_LOGIN_FO,
+    RES_COL_LOGIN_GPON,
+    RES_COL_LOGIN_UNIFIED,
+    RES_COL_CIDADE,
+    RES_COL_UF,
+    RES_COL_TECNOLOGIA,
+    RES_COL_NATUREZA,
+    RES_COL_SINTOMA,
+    RES_COL_FERRAMENTA,
+    RES_COL_FECHAMENTO,
+    RES_COL_ENVIADO_TOA,
+    RES_COL_DT_FIM,
+    RES_COL_DT_FIM_SISTEMA,
+    RES_COL_TMA,
+    RES_COL_TMR,
+}
+
+
+def _res_schema_key(value) -> str:
+    """Normaliza cabeçalhos/abas sem relaxar a semântica do campo."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = unicodedata.normalize("NFKD", str(value))
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = re.sub(r"[^0-9A-Za-z]+", "_", text.upper()).strip("_")
+    return re.sub(r"_+", "_", text)
+
+
+_RES_HEADER_BY_KEY = {_res_schema_key(name): name for name in _RES_KNOWN_COLUMNS}
+_RES_SHEET_KEYS = {_res_schema_key(name) for name in RES_SHEET_CANDIDATES}
+
+
+def _res_clean_text(value, empty_label: str = "") -> str:
+    if value is None or pd.isna(value):
+        return empty_label
+    text = unicodedata.normalize("NFKC", str(value))
+    text = re.sub(r"[\u200b-\u200d\ufeff]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text if text else empty_label
+
+
+def _res_normalize_columns(df: pd.DataFrame, audit: dict) -> pd.DataFrame:
+    rename: dict = {}
+    canonical_sources: dict[str, object] = {}
+    for original in df.columns:
+        canonical = _RES_HEADER_BY_KEY.get(_res_schema_key(original))
+        if not canonical:
+            continue
+        previous = canonical_sources.get(canonical)
+        if previous is not None and previous != original:
+            raise ResidentialImportError(
+                "schema_incompatible",
+                f"Duas colunas representam o mesmo campo obrigatório '{canonical}': "
+                f"'{previous}' e '{original}'.",
+                audit,
+            )
+        canonical_sources[canonical] = original
+        rename[original] = canonical
+    audit["header_mapping"] = {str(k): v for k, v in rename.items() if str(k) != v}
+    return df.rename(columns=rename)
+
+
+def _res_detect_sheet_and_header(raw_data: bytes, audit: dict) -> tuple[str, int]:
+    try:
+        workbook = openpyxl.load_workbook(
+            io.BytesIO(raw_data), read_only=True, data_only=True
         )
+    except Exception as exc:
+        raise ResidentialImportError(
+            "parse_error",
+            f"Não foi possível abrir o arquivo XLSX: {exc}",
+            audit,
+        ) from exc
 
-    df = df[df[RES_COL_INDICADOR_NOME].isin(RES_INDICADORES_FILTRO)].copy()
-    if df.empty:
-        raise ValueError(
-            f"Nenhuma linha com {RES_COL_INDICADOR_NOME} em {RES_INDICADORES_FILTRO} "
-            f"na aba '{sheet_to_read}'. Verifique se a planilha contém estes indicadores."
+    audit["sheets"] = list(workbook.sheetnames)
+    if not workbook.sheetnames:
+        workbook.close()
+        raise ResidentialImportError("empty_file", "O arquivo não possui abas.", audit)
+
+    preferred = [
+        name for name in workbook.sheetnames if _res_schema_key(name) in _RES_SHEET_KEYS
+    ]
+    scan_order = preferred + [name for name in workbook.sheetnames if name not in preferred]
+    core_keys = {
+        _res_schema_key(RES_COL_INDICADOR_NOME),
+        _res_schema_key(RES_COL_VOLUME),
+        _res_schema_key(RES_COL_INDICADOR_VAL),
+        _res_schema_key(RES_COL_REGIONAL),
+    }
+
+    best: tuple[int, str, int] | None = None
+    for sheet_name in scan_order:
+        worksheet = workbook[sheet_name]
+        for row_index, row in enumerate(
+            worksheet.iter_rows(min_row=1, max_row=20, values_only=True)
+        ):
+            keys = {_res_schema_key(value) for value in row if value is not None}
+            score = len(keys & set(_RES_HEADER_BY_KEY))
+            if core_keys.issubset(keys) and (best is None or score > best[0]):
+                best = (score, sheet_name, row_index)
+    workbook.close()
+
+    if best is None:
+        raise ResidentialImportError(
+            "schema_incompatible",
+            "Nenhuma aba contém um cabeçalho Residencial reconhecível nas primeiras 20 linhas.",
+            audit,
         )
+    _, sheet_name, header_index = best
+    audit["selected_sheet"] = sheet_name
+    audit["header_row"] = header_index + 1
+    return sheet_name, header_index
 
-    # Filtra regional Leste
-    if RES_COL_REGIONAL in df.columns:
-        df = df[df[RES_COL_REGIONAL] == REGIONAL_FILTRO].copy()
 
-    if df.empty:
-        raise ValueError(
-            f"Após filtrar por regional '{REGIONAL_FILTRO}' (coluna {RES_COL_REGIONAL}), "
-            f"nenhum registro restou."
-        )
-
-    # Normaliza matrículas alternativas para a matrícula canônica
+def _res_normalize_login(series: pd.Series) -> pd.Series:
+    normalized = series.map(_res_clean_text).str.upper()
     if LOGIN_ALIASES:
-        for _col in [RES_COL_ID_MOSTRA, "LOGIN_ACIONAMENTO", "LOGIN"]:
-            if _col in df.columns:
-                df[_col] = (
-                    df[_col].astype(str).str.strip()
-                    .map(lambda x, a=LOGIN_ALIASES: a.get(x, x))
-                )
+        normalized = normalized.map(lambda value: LOGIN_ALIASES.get(value, value))
+    return normalized.replace("NAN", "")
+
+
+def load_residencial_indicadores(uploaded_file) -> pd.DataFrame:
+    audit: dict = {"file_bytes": 0}
+    try:
+        if hasattr(uploaded_file, "getvalue"):
+            raw_data = uploaded_file.getvalue()
+        else:
+            raw_data = uploaded_file.read()
+    except Exception as exc:
+        raise ResidentialImportError(
+            "parse_error", f"Não foi possível ler o arquivo enviado: {exc}", audit
+        ) from exc
+    audit["file_bytes"] = len(raw_data or b"")
+    if not raw_data:
+        raise ResidentialImportError("empty_file", "O arquivo enviado está vazio.", audit)
+
+    sheet_to_read, header_index = _res_detect_sheet_and_header(raw_data, audit)
+    try:
+        df = pd.read_excel(
+            io.BytesIO(raw_data), sheet_name=sheet_to_read, header=header_index
+        )
+    except Exception as exc:
+        raise ResidentialImportError(
+            "parse_error",
+            f"Falha ao ler a aba '{sheet_to_read}': {exc}",
+            audit,
+        ) from exc
+
+    audit["raw_rows"] = len(df)
+    audit["raw_columns"] = len(df.columns)
+    audit["detected_columns"] = [str(column) for column in df.columns]
+    if df.empty:
+        raise ResidentialImportError(
+            "empty_file", f"A aba '{sheet_to_read}' não possui linhas de dados.", audit
+        )
+
+    df = _res_normalize_columns(df, audit)
+    missing = sorted(_RES_REQUIRED_COLUMNS - set(df.columns))
+    login_sources = {
+        RES_COL_LOGIN_FO, RES_COL_LOGIN_GPON, RES_COL_LOGIN_UNIFIED
+    } & set(df.columns)
+    if missing or not login_sources:
+        missing_display = missing or [
+            f"um de: {RES_COL_LOGIN_FO}, {RES_COL_LOGIN_GPON}, {RES_COL_LOGIN_UNIFIED}"
+        ]
+        audit["missing_required_columns"] = missing_display
+        raise ResidentialImportError(
+            "required_column_missing",
+            "Schema Residencial incompatível. Campo(s) obrigatório(s) ausente(s): "
+            + ", ".join(missing_display),
+            audit,
+        )
+    audit["missing_optional_columns"] = sorted(
+        _RES_EXPECTED_ANALYTIC_COLUMNS - set(df.columns)
+    )
+
+    # Canonicaliza os nomes dos quatro indicadores sem alterar sua regra.
+    indicator_by_key = {_res_schema_key(name): name for name in RES_INDICADORES_FILTRO}
+    indicator_keys = df[RES_COL_INDICADOR_NOME].map(_res_schema_key)
+    df[RES_COL_INDICADOR_NOME] = indicator_keys.map(indicator_by_key).fillna(
+        df[RES_COL_INDICADOR_NOME].map(_res_clean_text).str.upper()
+    )
+    df = df[df[RES_COL_INDICADOR_NOME].isin(RES_INDICADORES_FILTRO)].copy()
+    audit["rows_after_indicator_filter"] = len(df)
+    audit["rows_discarded_by_indicator"] = audit["raw_rows"] - len(df)
+    if df.empty:
+        raise ResidentialImportError(
+            "no_valid_rows",
+            "A planilha foi reconhecida, mas não contém linhas dos quatro indicadores suportados.",
+            audit,
+        )
+
+    df[RES_COL_REGIONAL] = df[RES_COL_REGIONAL].map(_res_clean_text)
+    regional_key = _res_schema_key(REGIONAL_FILTRO)
+    df = df[df[RES_COL_REGIONAL].map(_res_schema_key) == regional_key].copy()
+    df[RES_COL_REGIONAL] = REGIONAL_FILTRO
+    audit["rows_after_regional_filter"] = len(df)
+    audit["rows_discarded_by_regional"] = (
+        audit["rows_after_indicator_filter"] - len(df)
+    )
+    if df.empty:
+        raise ResidentialImportError(
+            "no_filter_results",
+            f"A planilha foi processada, mas não contém registros da Regional {REGIONAL_FILTRO}.",
+            audit,
+        )
 
     for c in [RES_COL_VOLUME, RES_COL_INDICADOR_VAL, RES_COL_TMA, RES_COL_TMR]:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
+    invalid_required = df[RES_COL_VOLUME].isna() | df[RES_COL_INDICADOR_VAL].isna()
+    audit["rows_discarded_invalid_numeric"] = int(invalid_required.sum())
+    if invalid_required.any():
+        df = df[~invalid_required].copy()
+    audit["rows_after_normalization"] = len(df)
+    if df.empty:
+        raise ResidentialImportError(
+            "no_valid_rows",
+            "A planilha foi reconhecida, mas nenhuma linha possui VOLUME e INDICADOR válidos.",
+            audit,
+        )
+
     for c in [RES_COL_DT_INICIO, RES_COL_DT_FIM, RES_COL_DT_FIM_SISTEMA]:
         if c in df.columns:
             df[c] = pd.to_datetime(df[c], errors="coerce")
+
+    for c in [
+        RES_COL_GRUPO, RES_COL_SERVICO, RES_COL_NATUREZA,
+        RES_COL_SOLUCAO, RES_COL_IMPACTO,
+    ]:
+        if c in df.columns:
+            df[c] = df[c].map(lambda value: _res_clean_text(value, "Não informado"))
+
+    # Valores equivalentes ganham uma forma canônica para que filtros e somas
+    # continuem fechando apesar de caixa, acento ou espaços diferentes.
+    if RES_COL_SERVICO in df.columns:
+        _service_labels = {
+            "GREENFIELD": "GREENFIELD", "BROWNFIELD": "BROWNFIELD", "HFC": "HFC"
+        }
+        df[RES_COL_SERVICO] = df[RES_COL_SERVICO].map(
+            lambda value: _service_labels.get(_res_schema_key(value), value)
+        )
+    if RES_COL_IMPACTO in df.columns:
+        _impact_labels = {"MASSIVO": "Massivo", "NAO_MASSIVO": "Não Massivo"}
+        df[RES_COL_IMPACTO] = df[RES_COL_IMPACTO].map(
+            lambda value: _impact_labels.get(_res_schema_key(value), value)
+        )
+    if RES_COL_STATUS in df.columns:
+        df[RES_COL_STATUS] = df[RES_COL_STATUS].map(_res_clean_text).str.upper()
 
     # Calcula TURNO a partir do horário de referência de cada indicador:
     # ETIT Fibra HFC / ETIT GPON → DT_INICIO
@@ -428,26 +657,34 @@ def load_residencial_indicadores(uploaded_file) -> pd.DataFrame:
     if RES_COL_DT_INICIO in df.columns:
         df["DATA_DIA"] = df[RES_COL_DT_INICIO].dt.normalize()
 
-    # Coluna unificada de login: cada indicador usa sua própria coluna de origem
+    # Coluna unificada de login: preserva o schema antigo (FO/GPON) e usa a
+    # coluna consolidada de 202608 como fallback por linha.
     fo_mask   = df[RES_COL_INDICADOR_NOME].isin({RES_IND_ETIT_FIBRA_HFC, RES_IND_ASSERT_FIBRA_HFC})
     gpon_mask = ~fo_mask
 
     df[RES_COL_LOGIN] = ""
+    unified_login = (
+        _res_normalize_login(df[RES_COL_LOGIN_UNIFIED])
+        if RES_COL_LOGIN_UNIFIED in df.columns
+        else pd.Series("", index=df.index, dtype=str)
+    )
     if RES_COL_LOGIN_FO in df.columns:
-        df.loc[fo_mask,   RES_COL_LOGIN] = (
-            df.loc[fo_mask,   RES_COL_LOGIN_FO]
-            .astype(str).str.strip().str.upper()
-        )
+        login_fo = _res_normalize_login(df[RES_COL_LOGIN_FO])
+        df.loc[fo_mask, RES_COL_LOGIN] = login_fo[fo_mask]
+    df.loc[fo_mask & df[RES_COL_LOGIN].eq(""), RES_COL_LOGIN] = unified_login[
+        fo_mask & df[RES_COL_LOGIN].eq("")
+    ]
     if RES_COL_LOGIN_GPON in df.columns:
-        df.loc[gpon_mask, RES_COL_LOGIN] = (
-            df.loc[gpon_mask, RES_COL_LOGIN_GPON]
-            .astype(str).str.strip().str.upper()
-        )
-
-    # Normaliza aliases e remove "nan" resultante de células vazias
-    if LOGIN_ALIASES:
-        df[RES_COL_LOGIN] = df[RES_COL_LOGIN].map(lambda x: LOGIN_ALIASES.get(x, x))
-    df[RES_COL_LOGIN] = df[RES_COL_LOGIN].replace("NAN", "")
+        login_gpon = _res_normalize_login(df[RES_COL_LOGIN_GPON])
+        df.loc[gpon_mask, RES_COL_LOGIN] = login_gpon[gpon_mask]
+    df.loc[gpon_mask & df[RES_COL_LOGIN].eq(""), RES_COL_LOGIN] = unified_login[
+        gpon_mask & df[RES_COL_LOGIN].eq("")
+    ]
+    df[RES_COL_LOGIN] = _res_normalize_login(df[RES_COL_LOGIN])
+    audit["login_source_columns"] = sorted(login_sources)
+    audit["rows_with_login"] = int(df[RES_COL_LOGIN].ne("").sum())
+    audit["rows_without_login"] = int(df[RES_COL_LOGIN].eq("").sum())
+    audit["unique_logins"] = int(df.loc[df[RES_COL_LOGIN].ne(""), RES_COL_LOGIN].nunique())
 
     # Merge com BASE_EQUIPE para nome e setor
     df = df.merge(
@@ -459,7 +696,33 @@ def load_residencial_indicadores(uploaded_file) -> pd.DataFrame:
     ).fillna(df[RES_COL_LOGIN])
     df["Setor"] = df["Setor"].fillna("")
 
+    df.attrs["residential_import_audit"] = audit
+
     return df
+
+
+def filter_residential_by_logins(df: pd.DataFrame, allowed_logins) -> pd.DataFrame:
+    """Aplica autorização Residencial por matrícula canônica, sempre fail-closed."""
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df.copy()
+    if RES_COL_LOGIN not in df.columns:
+        raise ResidentialImportError(
+            "internal_model_error",
+            f"O modelo Residencial processado não contém '{RES_COL_LOGIN}'.",
+            df.attrs.get("residential_import_audit", {}),
+        )
+    allowed = {
+        LOGIN_ALIASES.get(_res_clean_text(value).upper(), _res_clean_text(value).upper())
+        for value in allowed_logins
+        if _res_clean_text(value)
+    }
+    result = df[df[RES_COL_LOGIN].isin(allowed)].copy()
+    audit = dict(df.attrs.get("residential_import_audit", {}))
+    audit["permission_input_rows"] = len(df)
+    audit["permission_output_rows"] = len(result)
+    audit["permission_login_count"] = len(allowed)
+    result.attrs["residential_import_audit"] = audit
+    return result
 
 
 def res_kpis_por_indicador(df: pd.DataFrame) -> pd.DataFrame:
@@ -483,7 +746,9 @@ def res_kpis_por_indicador(df: pd.DataFrame) -> pd.DataFrame:
         + (["QTDE_REPROG"] if has_reprog else [])
     )
     g.columns = col_names
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     order = {ind: i for i, ind in enumerate(RES_INDICADORES_FILTRO)}
     g["_ord"] = g["Indicador"].map(order)
     return g.sort_values("_ord").drop(columns="_ord").reset_index(drop=True)
@@ -501,7 +766,9 @@ def res_por_analista(df: pd.DataFrame, indicador: str = None) -> pd.DataFrame:
         Volume=(RES_COL_VOLUME, "sum"),
         Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={RES_COL_LOGIN: "Login"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Aderencia_Pct", ascending=False).reset_index(drop=True)
 
 
@@ -514,7 +781,9 @@ def res_por_regional(df: pd.DataFrame, indicador=None) -> pd.DataFrame:
     g = sub.groupby(RES_COL_REGIONAL).agg(
         Volume=(RES_COL_VOLUME, "sum"), Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={RES_COL_REGIONAL: "Regional"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Volume", ascending=False).reset_index(drop=True)
 
 
@@ -527,7 +796,9 @@ def res_por_natureza(df: pd.DataFrame, indicador=None) -> pd.DataFrame:
     g = sub.groupby(RES_COL_NATUREZA).agg(
         Volume=(RES_COL_VOLUME, "sum"), Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={RES_COL_NATUREZA: "Natureza"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Volume", ascending=False).reset_index(drop=True)
 
 
@@ -540,7 +811,9 @@ def res_por_solucao(df: pd.DataFrame, indicador=None, top_n=15) -> pd.DataFrame:
     g = sub.groupby(RES_COL_SOLUCAO).agg(
         Volume=(RES_COL_VOLUME, "sum"), Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={RES_COL_SOLUCAO: "Solução"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Volume", ascending=False).head(top_n).reset_index(drop=True)
 
 
@@ -553,7 +826,9 @@ def res_por_impacto(df: pd.DataFrame, indicador=None) -> pd.DataFrame:
     g = sub.groupby(RES_COL_IMPACTO).agg(
         Volume=(RES_COL_VOLUME, "sum"), Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={RES_COL_IMPACTO: "Impacto"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Volume", ascending=False).reset_index(drop=True)
 
 
@@ -567,7 +842,9 @@ def res_evolucao_diaria(df: pd.DataFrame, indicador=None) -> pd.DataFrame:
     g = sub.groupby("DATA_DIA").agg(
         Volume=(RES_COL_VOLUME, "sum"), Aderentes=("ADERENTE", "sum"),
     ).reset_index().rename(columns={"DATA_DIA": "Data"})
+    g["Nao_Aderentes"] = (g["Volume"] - g["Aderentes"]).clip(lower=0)
     g["Aderencia_Pct"] = (g["Aderentes"] / g["Volume"] * 100).round(1)
+    g["Nao_Aderencia_Pct"] = (g["Nao_Aderentes"] / g["Volume"] * 100).round(1)
     return g.sort_values("Data").reset_index(drop=True)
 
 
