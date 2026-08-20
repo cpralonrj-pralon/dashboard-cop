@@ -101,6 +101,34 @@ def change_password(username: str, new_password: str) -> None:
     data[uid] = {"hash": hashed, "salt": salt, "must_change": False}
     _save_passwords(data)
 
+def reset_user_passwords(usernames) -> int:
+    """Reseta em uma única gravação apenas os usuários informados.
+
+    IDs inexistentes são ignorados. Uma falha de persistência é reportada ao
+    chamador para que a interface não anuncie um reset que não foi salvo.
+    """
+    target_ids = {
+        str(username).strip().upper()
+        for username in usernames
+        if str(username).strip()
+    }
+    if not target_ids:
+        return 0
+
+    data = _load_passwords()
+    count = 0
+    for uid in sorted(target_ids):
+        if uid not in data:
+            continue
+        hashed, salt = _hash_password(DEFAULT_PASSWORD)
+        data[uid] = {"hash": hashed, "salt": salt, "must_change": True}
+        count += 1
+
+    if count and not _save_passwords(data):
+        raise RuntimeError("Falha ao persistir o reset de senhas.")
+    return count
+
+
 def reset_non_admin_passwords(preserve_ids: set = None) -> int:
     """Reseta senhas de todos os usuários fora de preserve_ids para o padrão.
     Retorna o número de usuários resetados."""
@@ -190,7 +218,7 @@ def _r2_cached_download(filename: str, version: str) -> bytes | None:
 
 _R2_CHECK_INTERVAL_SEC = 300  # ~5 min entre verificações de versão R2 por sessão
 
-def load_saved_files_to_session() -> None:
+def load_saved_files_to_session(excluded_keys: set | None = None) -> None:
     """Carrega arquivos salvos do R2/disco para o session_state.
 
     Para evitar 'RUNNING' constante a cada interação do usuário, a verificação
@@ -199,15 +227,27 @@ def load_saved_files_to_session() -> None:
       • passou mais de _R2_CHECK_INTERVAL_SEC desde a última checagem.
     Caso contrário, retorna sem fazer chamadas de rede.
     """
+    excluded = set(excluded_keys or set())
+    active_file_map = {
+        key: filename
+        for key, filename in UPLOAD_FILE_MAP.items()
+        if key not in excluded
+    }
+
+    # Evita reaproveitar dados de uma conta anterior na mesma sessão do navegador.
+    for key in excluded:
+        st.session_state.pop(key, None)
+        st.session_state.pop(key + "_name", None)
+
     if storage.r2_available():
         _now = time.time()
         _last = st.session_state.get("_r2_last_check_ts", 0.0)
-        _all_loaded = all(k in st.session_state for k in UPLOAD_FILE_MAP.keys())
+        _all_loaded = all(k in st.session_state for k in active_file_map)
         if _all_loaded and (_now - _last) < _R2_CHECK_INTERVAL_SEC:
             return  # nada a fazer — sem rede, sem spinner
 
         # Verifica versões e baixa apenas o que mudou
-        for key, filename in UPLOAD_FILE_MAP.items():
+        for key, filename in active_file_map.items():
             version = _get_file_version(filename)
             version_key = key + "_r2_version"
             if st.session_state.get(version_key) != version:
@@ -224,7 +264,7 @@ def load_saved_files_to_session() -> None:
         return
 
     # Modo local — verifica arquivo .version para detectar uploads feitos pelo admin
-    for key, filename in UPLOAD_FILE_MAP.items():
+    for key, filename in active_file_map.items():
         ver_path = DATA_DIR / "uploads" / (filename + ".version")
         version_key = key + "_local_version"
         disk_version = ver_path.read_text(encoding="utf-8").strip() if ver_path.exists() else "0"

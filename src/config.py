@@ -53,9 +53,25 @@ LIDERES_IDS = {
 # empresariais (veem ETIT, não veem Indicadores Residencial — ver SUB_ADMIN_EMP_IDS).
 COORD_IDS = {"LUIZ", "VINICIUS", "N0150817", "N5768308", "TPAROLI"}
 
+SUB_ADMIN_NAMES = {
+    "LUIZ": "Luiz",
+    "VINICIUS": "Vinícius",
+    "N0150817": "Alexandre Sampaio",
+    "N5768308": "Patrick Sarmento",
+    "TPAROLI": "Thiago Paroli",
+}
+
 # Sub-admins empresariais: coordenadores que VEEM ETIT Empresarial e NÃO veem a aba
 # "Indicadores Residencial" (nem eles nem seus líderes/analistas).
 SUB_ADMIN_EMP_IDS = {"N0150817", "N5768308", "TPAROLI"}
+
+# Fechamento TOA x SIR não faz parte do escopo dos sub-admins Residenciais.
+FECH_SIR_HIDDEN_ADMIN_IDS = {"LUIZ", "VINICIUS"}
+
+
+def can_view_fechamento_toa_sir(user_id: str) -> bool:
+    """Centraliza a permissão da fonte/visão Fechamento TOA x SIR."""
+    return str(user_id).strip().upper() not in FECH_SIR_HIDDEN_ADMIN_IDS
 
 # ID do super-observador: pode ver as visões de Nelson, Luiz, Vinicius e Todos
 PRALON_ID = "PRALON"
